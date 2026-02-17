@@ -1,6 +1,9 @@
 name: Build Tweak and Create IPA
 
 on:
+  push:
+    branches:
+      - custom-tweak
   workflow_dispatch:
     inputs:
       apollo_ipa_url:
@@ -8,6 +11,9 @@ on:
         required: false
         type: string
         default: 'https://github.com/Balackburn/Apollo/releases/download/v1.15.11_1.4.4/Apollo-1.15.11_ImprovedCustomApi-1.4.4.ipa'
+
+env:
+  DEFAULT_IPA_URL: 'https://github.com/Balackburn/Apollo/releases/download/v1.15.11_1.4.4/Apollo-1.15.11_ImprovedCustomApi-1.4.4.ipa'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -54,8 +60,9 @@ jobs:
 
       - name: Download base Apollo IPA
         run: |
-          echo "Downloading Apollo IPA..."
-          curl -L --fail "${{ github.event.inputs.apollo_ipa_url }}" -o Apollo-base.ipa
+          IPA_URL="${{ github.event.inputs.apollo_ipa_url || env.DEFAULT_IPA_URL }}"
+          echo "Downloading Apollo IPA from: $IPA_URL"
+          curl -L --fail "$IPA_URL" -o Apollo-base.ipa
           echo "Verifying IPA..."
           unzip -t Apollo-base.ipa > /dev/null
           echo "IPA verified successfully."
