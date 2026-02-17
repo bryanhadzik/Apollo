@@ -75,7 +75,7 @@ jobs:
         run: |
           DEB_FILE="${{ steps.find_deb.outputs.deb_file }}"
           echo "Injecting $DEB_FILE into Apollo IPA..."
-          cyan inject Apollo-base.ipa "$DEB_FILE" -o Apollo-Custom.ipa
+          cyan -i Apollo-base.ipa -o Apollo-Custom.ipa -f "$DEB_FILE"
           echo "Injection complete."
           ls -la Apollo-Custom.ipa
 
