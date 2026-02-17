@@ -1854,7 +1854,7 @@ static void ShowUndoToast(NSString *subredditName) {
 // (ApolloUndoHelper class defined above ShowUndoToast)
 
 // ============================================================================
-// MARK: - Post Cell Swipe: Hook the post list to add "Filter Subreddit" on left swipe
+// MARK: - Post Cell Swipe: Hook the post list to add "Filter Subreddit" on right swipe
 // ============================================================================
 
 // Apollo's post cells in feed views. The post list uses ASTableNode (Texture framework).
@@ -1879,8 +1879,8 @@ static void ShowUndoToast(NSString *subredditName) {
 - (id)nodeForRowAtIndexPath:(NSIndexPath *)indexPath;
 @end
 
-// Add filter action on trailing swipe (added to existing ASTableView hook)
-- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+// Add filter action on leading swipe (right swipe gesture)
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
     UISwipeActionsConfiguration *orig = %orig;
 
     if (!sFilterSwipeEnabled) {
@@ -1928,15 +1928,15 @@ static void ShowUndoToast(NSString *subredditName) {
     filterAction.backgroundColor = [UIColor systemRedColor];
     filterAction.image = [UIImage systemImageNamed:@"eye.slash.fill"];
 
-    // Prepend filter action to existing trailing actions
+    // Build leading actions array with filter action
     NSMutableArray *actions = [NSMutableArray array];
+    [actions addObject:filterAction];
     if (orig && orig.actions) {
         [actions addObjectsFromArray:orig.actions];
     }
-    [actions addObject:filterAction];
 
     UISwipeActionsConfiguration *config = [UISwipeActionsConfiguration configurationWithActions:actions];
-    config.performsFirstActionWithFullSwipe = orig ? orig.performsFirstActionWithFullSwipe : NO;
+    config.performsFirstActionWithFullSwipe = NO; // Short swipe only, no full-swipe trigger
     return config;
 }
 

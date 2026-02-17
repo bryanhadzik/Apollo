@@ -281,7 +281,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     UIStackView *disableVotingStackView = [self createToggleSwitchWithKey:UDKeyDisableVoting labelText:@"Disable Voting (hides buttons)" action:@selector(disableVotingSwitchToggled:)];
     [stackView addArrangedSubview:disableVotingStackView];
 
-    UIStackView *filterSwipeStackView = [self createToggleSwitchWithKey:UDKeyFilterSwipeEnabled labelText:@"Filter Subreddit on Left Swipe" action:@selector(filterSwipeSwitchToggled:)];
+    UIStackView *filterSwipeStackView = [self createToggleSwitchWithKey:UDKeyFilterSwipeEnabled labelText:@"Filter Subreddit on Right Swipe" action:@selector(filterSwipeSwitchToggled:)];
     [stackView addArrangedSubview:filterSwipeStackView];
 
     UIButton *exportFiltersButton = [UIButton systemButtonWithPrimaryAction:[UIAction actionWithTitle:@"Export Local Filters" image:nil identifier:nil handler:^(UIAction * action) {
