@@ -6,11 +6,12 @@
 @property (atomic, strong) NSString *resolvedURL;
 @end
 
-@interface RDKLink
+@interface RDKLink : NSObject
 @property(copy, nonatomic) NSURL *URL;
+@property(copy, nonatomic) NSString *subreddit;
 @end
 
-@interface RDKComment
+@interface RDKComment : NSObject
 {
     NSDate *_createdUTC;
     NSString *_linkID;

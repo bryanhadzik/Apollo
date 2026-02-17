@@ -753,9 +753,10 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
 
 %end
 
-@interface _TtC6Apollo15CommentCellNode
+@interface _TtC6Apollo15CommentCellNode : NSObject
 - (void)didLoad;
 - (void)linkButtonTappedWithSender:(_TtC6Apollo14LinkButtonNode *)arg1;
+- (void)apollo_hideVoteButtonsInView:(UIView *)view;
 @end
 
 // Single comment under an individual post
@@ -847,6 +848,12 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
 %end
 
 // Component at the top of a single post view ("header")
+@interface _TtC6Apollo22CommentsHeaderCellNode : NSObject
+- (void)didLoad;
+- (void)linkButtonNodeTappedWithSender:(_TtC6Apollo14LinkButtonNode *)arg1;
+- (void)apollo_hideVoteButtonsInView:(UIView *)view;
+@end
+
 %hook _TtC6Apollo22CommentsHeaderCellNode
 
 - (void)didLoad {
@@ -1742,6 +1749,28 @@ static void UnfilterSubreddit(NSString *subredditName) {
     ApolloLog(@"[Filter] Removed subreddit filter: %@", subredditName);
 }
 
+// Helper class for undo button action
+@interface ApolloUndoHelper : NSObject
++ (void)undoFilterTapped:(UIButton *)sender;
+@end
+
+@implementation ApolloUndoHelper
++ (void)undoFilterTapped:(UIButton *)sender {
+    NSString *sub = objc_getAssociatedObject(sender, "filterSubredditName");
+    UIView *toast = objc_getAssociatedObject(sender, "toastView");
+    if (sub) {
+        UnfilterSubreddit(sub);
+    }
+    if (toast) {
+        [UIView animateWithDuration:0.3 animations:^{
+            toast.alpha = 0;
+        } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
+    }
+}
+@end
+
 static void ShowUndoToast(NSString *subredditName) {
     dispatch_async(dispatch_get_main_queue(), ^{
         // Find the key window
@@ -1822,27 +1851,7 @@ static void ShowUndoToast(NSString *subredditName) {
     });
 }
 
-// Helper class for undo button action
-@interface ApolloUndoHelper : NSObject
-+ (void)undoFilterTapped:(UIButton *)sender;
-@end
-
-@implementation ApolloUndoHelper
-+ (void)undoFilterTapped:(UIButton *)sender {
-    NSString *sub = objc_getAssociatedObject(sender, "filterSubredditName");
-    UIView *toast = objc_getAssociatedObject(sender, "toastView");
-    if (sub) {
-        UnfilterSubreddit(sub);
-    }
-    if (toast) {
-        [UIView animateWithDuration:0.3 animations:^{
-            toast.alpha = 0;
-        } completion:^(BOOL finished) {
-            [toast removeFromSuperview];
-        }];
-    }
-}
-@end
+// (ApolloUndoHelper class defined above ShowUndoToast)
 
 // ============================================================================
 // MARK: - Post Cell Swipe: Hook the post list to add "Filter Subreddit" on left swipe
@@ -1852,14 +1861,10 @@ static void ShowUndoToast(NSString *subredditName) {
 // Apollo implements swipe actions via the editActionsForRowAtIndexPath pattern.
 // We hook the PostListViewController (or the data source) to inject our filter action.
 
-// RDKLink interface already declared in Tweak.h, but we need the subreddit property
-@interface RDKLink (Filter)
-@property (nonatomic, copy) NSString *subreddit;
-@end
-
 // Apollo's post cell node
 @interface _TtC6Apollo12PostCellNode : NSObject
 @property (nonatomic, strong) RDKLink *link;
+- (void)apollo_hideVoteButtonsInView:(UIView *)view;
 @end
 
 // Hook ASTableView to intercept swipe actions configuration
@@ -1900,7 +1905,7 @@ static void ShowUndoToast(NSString *subredditName) {
             // Try to get RDKLink from the cell node
             @try {
                 RDKLink *link = MSHookIvar<RDKLink *>(cellNode, "link");
-                if (link && [link respondsToSelector:@selector(subreddit)]) {
+                if (link) {
                     subredditName = link.subreddit;
                 }
             } @catch (NSException *e) {}
