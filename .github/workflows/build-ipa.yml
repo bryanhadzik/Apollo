@@ -1,0 +1,102 @@
+name: Build Tweak and Create IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      apollo_ipa_url:
+        description: 'Direct URL to Apollo IPA (with ImprovedCustomApi already injected)'
+        required: false
+        type: string
+        default: 'https://github.com/Balackburn/Apollo/releases/download/v1.15.11_1.4.4/Apollo-1.15.11_ImprovedCustomApi-1.4.4.ipa'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build tweak and inject into IPA
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Install Dependencies
+        run: brew install ldid dpkg make
+
+      - name: Set PATH
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Setup Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+
+      - name: Build rootful package
+        run: make package FINALPACKAGE=1
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Find built .deb
+        id: find_deb
+        run: |
+          DEB_FILE=$(ls packages/*.deb | head -1)
+          echo "deb_file=$DEB_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found deb: $DEB_FILE"
+
+      - name: Download base Apollo IPA
+        run: |
+          echo "Downloading Apollo IPA..."
+          curl -L --fail "${{ github.event.inputs.apollo_ipa_url }}" -o Apollo-base.ipa
+          echo "Verifying IPA..."
+          unzip -t Apollo-base.ipa > /dev/null
+          echo "IPA verified successfully."
+
+      - name: Install pyzule-rw for IPA injection
+        run: |
+          pip3 install --break-system-packages https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject tweak into IPA
+        run: |
+          DEB_FILE="${{ steps.find_deb.outputs.deb_file }}"
+          echo "Injecting $DEB_FILE into Apollo IPA..."
+          cyan inject Apollo-base.ipa "$DEB_FILE" -o Apollo-Custom.ipa
+          echo "Injection complete."
+          ls -la Apollo-Custom.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-Custom-IPA
+          path: Apollo-Custom.ipa
+
+      - name: Upload DEB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Custom-Tweak-DEB
+          path: packages/*.deb
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2.0.8
+        with:
+          draft: true
+          tag_name: custom-build-${{ github.run_number }}
+          name: Apollo Custom Build ${{ github.run_number }}
+          body: |
+            Custom Apollo build with:
+            - Filter Subreddit on left swipe (with 2s undo toast)
+            - Export local filters
+            - Disable voting setting (hides vote buttons)
+            - All ImprovedCustomApi features
+          files: |
+            Apollo-Custom.ipa
+            packages/*.deb
+          prerelease: false

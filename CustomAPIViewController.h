@@ -15,3 +15,5 @@ NSString *sTrendingSubredditsSource;
 NSString *sTrendingSubredditsLimit;
 
 BOOL sBlockAnnouncements;
+BOOL sDisableVoting;
+BOOL sFilterSwipeEnabled;

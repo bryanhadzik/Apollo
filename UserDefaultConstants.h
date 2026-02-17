@@ -30,3 +30,7 @@ static NSString *const UDKeyApolloShowUnreadComments = @"ShowUnreadComments";
     ]
 */
 static NSString *const UDKeyApolloPostCommentsSnapshots = @"PostCommentsSnapshots";
+
+// Custom tweak keys
+static NSString *const UDKeyDisableVoting = @"ApolloTweakDisableVoting";
+static NSString *const UDKeyFilterSwipeEnabled = @"ApolloTweakFilterSwipeEnabled";

@@ -278,6 +278,25 @@ typedef NS_ENUM(NSInteger, Tag) {
     UIStackView *randNsfwStackView = [self createToggleSwitchWithKey:UDKeyShowRandNsfw labelText:@"RandNSFW button" action:@selector(randNsfwSwitchToggled:)];
     [stackView addArrangedSubview:randNsfwStackView];
 
+    UIStackView *disableVotingStackView = [self createToggleSwitchWithKey:UDKeyDisableVoting labelText:@"Disable Voting (hides buttons)" action:@selector(disableVotingSwitchToggled:)];
+    [stackView addArrangedSubview:disableVotingStackView];
+
+    UIStackView *filterSwipeStackView = [self createToggleSwitchWithKey:UDKeyFilterSwipeEnabled labelText:@"Filter Subreddit on Left Swipe" action:@selector(filterSwipeSwitchToggled:)];
+    [stackView addArrangedSubview:filterSwipeStackView];
+
+    UIButton *exportFiltersButton = [UIButton systemButtonWithPrimaryAction:[UIAction actionWithTitle:@"Export Local Filters" image:nil identifier:nil handler:^(UIAction * action) {
+        [self exportLocalFilters];
+    }]];
+    exportFiltersButton.titleLabel.font = [UIFont systemFontOfSize:16.0];
+    [stackView addArrangedSubview:exportFiltersButton];
+
+    UILabel *exportFiltersNote = [[UILabel alloc] init];
+    exportFiltersNote.text = @"Exports subreddit filters added via the swipe gesture as a text file.";
+    exportFiltersNote.font = [UIFont systemFontOfSize:13];
+    exportFiltersNote.textColor = [UIColor secondaryLabelColor];
+    exportFiltersNote.numberOfLines = 0;
+    [stackView addArrangedSubview:exportFiltersNote];
+
     UIStackView *trendingSubredditsLimitStackView = [self createLabeledStackViewWithLabelText:@"Limit trending subreddits to:" placeholder:@"(unlimited)" text:sTrendingSubredditsLimit tag:TagTrendingLimit isNumerical:YES];
     [stackView addArrangedSubview:trendingSubredditsLimitStackView];
 
@@ -476,6 +495,58 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)randNsfwSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyShowRandNsfw];
+}
+
+- (void)disableVotingSwitchToggled:(UISwitch *)sender {
+    sDisableVoting = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sDisableVoting forKey:UDKeyDisableVoting];
+}
+
+- (void)filterSwipeSwitchToggled:(UISwitch *)sender {
+    sFilterSwipeEnabled = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sFilterSwipeEnabled forKey:UDKeyFilterSwipeEnabled];
+}
+
+- (void)exportLocalFilters {
+    NSArray *localFilters = [[NSUserDefaults standardUserDefaults] objectForKey:@"ApolloTweakLocalFilters"];
+    if (!localFilters || localFilters.count == 0) {
+        [self showAlertWithTitle:@"No Filters" message:@"No locally-added subreddit filters to export. Add filters by swiping left on posts in your feed."];
+        return;
+    }
+
+    // Also include all filters from Apollo's group defaults for completeness
+    NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    NSArray *allFilters = [groupDefaults objectForKey:@"FilteredSubreddits"];
+
+    NSMutableString *content = [NSMutableString string];
+    [content appendString:@"# Apollo Subreddit Filters Export\n"];
+    [content appendFormat:@"# Exported: %@\n\n", [NSDate date]];
+
+    [content appendString:@"## Locally Added Filters (via swipe gesture)\n"];
+    for (NSString *filter in localFilters) {
+        [content appendFormat:@"%@\n", filter];
+    }
+
+    if (allFilters && allFilters.count > 0) {
+        [content appendString:@"\n## All Active Filters\n"];
+        for (NSString *filter in allFilters) {
+            [content appendFormat:@"%@\n", filter];
+        }
+    }
+
+    // Write to temp file and present share sheet
+    NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"apollo_filters_export.txt"];
+    NSError *error = nil;
+    [content writeToFile:tempPath atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    if (error) {
+        [self showAlertWithTitle:@"Export Failed" message:error.localizedDescription];
+        return;
+    }
+
+    NSURL *fileURL = [NSURL fileURLWithPath:tempPath];
+    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[fileURL] applicationActivities:nil];
+    activityVC.popoverPresentationController.sourceView = self.view;
+    [self presentViewController:activityVC animated:YES completion:nil];
 }
 
 #pragma mark - Backup / Restore

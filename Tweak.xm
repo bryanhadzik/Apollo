@@ -763,6 +763,19 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
 
 - (void)didLoad {
     %orig;
+
+    // Hide vote buttons if voting is disabled
+    if (sDisableVoting) {
+        @try {
+            UIView *view = MSHookIvar<UIView *>(self, "_view");
+            if (view) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self apollo_hideVoteButtonsInView:view];
+                });
+            }
+        } @catch (NSException *e) {}
+    }
+
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyApolloShowUnreadComments] == NO) {
         return;
     }
@@ -782,6 +795,22 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
                 [view insertSubview:yellowTintView atIndex:1];
             }
         }
+    }
+}
+
+%new
+- (void)apollo_hideVoteButtonsInView:(UIView *)view {
+    for (UIView *subview in view.subviews) {
+        NSString *accessLabel = subview.accessibilityLabel;
+        if (accessLabel) {
+            NSString *lower = [accessLabel lowercaseString];
+            if ([lower containsString:@"upvote"] || [lower containsString:@"downvote"]) {
+                subview.hidden = YES;
+                subview.userInteractionEnabled = NO;
+                continue;
+            }
+        }
+        [self apollo_hideVoteButtonsInView:subview];
     }
 }
 
@@ -819,6 +848,37 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
 
 // Component at the top of a single post view ("header")
 %hook _TtC6Apollo22CommentsHeaderCellNode
+
+- (void)didLoad {
+    %orig;
+
+    if (!sDisableVoting) return;
+
+    @try {
+        UIView *view = MSHookIvar<UIView *>(self, "_view");
+        if (!view) return;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self apollo_hideVoteButtonsInView:view];
+        });
+    } @catch (NSException *e) {}
+}
+
+%new
+- (void)apollo_hideVoteButtonsInView:(UIView *)view {
+    for (UIView *subview in view.subviews) {
+        NSString *accessLabel = subview.accessibilityLabel;
+        if (accessLabel) {
+            NSString *lower = [accessLabel lowercaseString];
+            if ([lower containsString:@"upvote"] || [lower containsString:@"downvote"]) {
+                subview.hidden = YES;
+                subview.userInteractionEnabled = NO;
+                continue;
+            }
+        }
+        [self apollo_hideVoteButtonsInView:subview];
+    }
+}
 
 -(void)linkButtonNodeTappedWithSender:(_TtC6Apollo14LinkButtonNode *)arg1 {
     RDKLink *rdkLink = MSHookIvar<RDKLink *>(self, "link");
@@ -1014,6 +1074,18 @@ static BOOL ApolloIsValidGiphyID(NSString *giphyID) {
 - (NSString *)userAgent {
     NSString *customUA = [sUserAgent length] > 0 ? sUserAgent : defaultUserAgent;
     return customUA;
+}
+
+- (void)submitVote:(id)vote onThing:(id)thing completion:(id)completion {
+    if (sDisableVoting) {
+        ApolloLog(@"[DisableVoting] Blocked vote submission");
+        if (completion) {
+            void (^completionBlock)(id) = completion;
+            completionBlock(nil);
+        }
+        return;
+    }
+    %orig;
 }
 
 %end
@@ -1595,7 +1667,343 @@ static char kASTableViewHasSearchToolbarKey;
     %orig;
 }
 
+// ============================================================================
+// MARK: - Filter Subreddit on Left Swipe + Undo Toast
+// ============================================================================
+
+// Group UserDefaults suite name for Apollo's shared container (stores filters, themes, etc.)
+static NSString *const kApolloGroupSuiteName = @"group.com.christianselig.apollo";
+
+// The key Apollo uses to store filtered subreddits in group defaults
+static NSString *const kApolloFilteredSubredditsKey = @"FilteredSubreddits";
+
+// Locally-added filters tracked by our tweak (for export feature)
+static NSString *const UDKeyLocalFilters = @"ApolloTweakLocalFilters";
+
+static void FilterSubreddit(NSString *subredditName) {
+    if (!subredditName || subredditName.length == 0) return;
+
+    // Add to Apollo's official filtered subreddits list in group defaults
+    NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:kApolloGroupSuiteName];
+    NSMutableArray *filtered = [[groupDefaults objectForKey:kApolloFilteredSubredditsKey] mutableCopy] ?: [NSMutableArray array];
+
+    // Check if already filtered (case-insensitive)
+    for (NSString *existing in filtered) {
+        if ([existing caseInsensitiveCompare:subredditName] == NSOrderedSame) {
+            return; // Already filtered
+        }
+    }
+
+    [filtered addObject:subredditName];
+    [groupDefaults setObject:filtered forKey:kApolloFilteredSubredditsKey];
+    [groupDefaults synchronize];
+
+    // Also track in our local filters list (for export)
+    NSMutableArray *localFilters = [[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyLocalFilters] mutableCopy] ?: [NSMutableArray array];
+    [localFilters addObject:subredditName];
+    [[NSUserDefaults standardUserDefaults] setObject:localFilters forKey:UDKeyLocalFilters];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    ApolloLog(@"[Filter] Added subreddit filter: %@", subredditName);
+}
+
+static void UnfilterSubreddit(NSString *subredditName) {
+    if (!subredditName || subredditName.length == 0) return;
+
+    // Remove from Apollo's filtered subreddits
+    NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:kApolloGroupSuiteName];
+    NSMutableArray *filtered = [[groupDefaults objectForKey:kApolloFilteredSubredditsKey] mutableCopy];
+    if (!filtered) return;
+
+    NSMutableArray *toRemove = [NSMutableArray array];
+    for (NSString *existing in filtered) {
+        if ([existing caseInsensitiveCompare:subredditName] == NSOrderedSame) {
+            [toRemove addObject:existing];
+        }
+    }
+    [filtered removeObjectsInArray:toRemove];
+    [groupDefaults setObject:filtered forKey:kApolloFilteredSubredditsKey];
+    [groupDefaults synchronize];
+
+    // Remove from local filters too
+    NSMutableArray *localFilters = [[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyLocalFilters] mutableCopy];
+    if (localFilters) {
+        NSMutableArray *localToRemove = [NSMutableArray array];
+        for (NSString *existing in localFilters) {
+            if ([existing caseInsensitiveCompare:subredditName] == NSOrderedSame) {
+                [localToRemove addObject:existing];
+            }
+        }
+        [localFilters removeObjectsInArray:localToRemove];
+        [[NSUserDefaults standardUserDefaults] setObject:localFilters forKey:UDKeyLocalFilters];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+
+    ApolloLog(@"[Filter] Removed subreddit filter: %@", subredditName);
+}
+
+static void ShowUndoToast(NSString *subredditName) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Find the key window
+        __block UIWindow *keyWindow = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                if (windowScene.keyWindow) {
+                    keyWindow = windowScene.keyWindow;
+                    break;
+                }
+            }
+        }
+        if (!keyWindow) return;
+
+        // Create toast container
+        UIView *toastView = [[UIView alloc] init];
+        toastView.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        toastView.layer.cornerRadius = 12;
+        toastView.clipsToBounds = YES;
+        toastView.translatesAutoresizingMaskIntoConstraints = NO;
+        toastView.alpha = 0;
+
+        // Label
+        UILabel *label = [[UILabel alloc] init];
+        label.text = [NSString stringWithFormat:@"Filtered r/%@", subredditName];
+        label.textColor = [UIColor whiteColor];
+        label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+
+        // Undo button
+        UIButton *undoButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [undoButton setTitle:@"Undo" forState:UIControlStateNormal];
+        [undoButton setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
+        undoButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+        undoButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+        // Store subreddit name and toast view for undo action
+        objc_setAssociatedObject(undoButton, "filterSubredditName", subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(undoButton, "toastView", toastView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        // Add undo action via our helper class
+        [undoButton addTarget:[ApolloUndoHelper class] action:@selector(undoFilterTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+        [toastView addSubview:label];
+        [toastView addSubview:undoButton];
+        [keyWindow addSubview:toastView];
+
+        // Layout
+        [NSLayoutConstraint activateConstraints:@[
+            [toastView.bottomAnchor constraintEqualToAnchor:keyWindow.safeAreaLayoutGuide.bottomAnchor constant:-16],
+            [toastView.centerXAnchor constraintEqualToAnchor:keyWindow.centerXAnchor],
+            [toastView.leadingAnchor constraintGreaterThanOrEqualToAnchor:keyWindow.leadingAnchor constant:20],
+            [toastView.trailingAnchor constraintLessThanOrEqualToAnchor:keyWindow.trailingAnchor constant:-20],
+            [toastView.heightAnchor constraintEqualToConstant:44],
+
+            [label.leadingAnchor constraintEqualToAnchor:toastView.leadingAnchor constant:16],
+            [label.centerYAnchor constraintEqualToAnchor:toastView.centerYAnchor],
+
+            [undoButton.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:16],
+            [undoButton.trailingAnchor constraintEqualToAnchor:toastView.trailingAnchor constant:-16],
+            [undoButton.centerYAnchor constraintEqualToAnchor:toastView.centerYAnchor],
+        ]];
+
+        // Animate in
+        [UIView animateWithDuration:0.3 animations:^{
+            toastView.alpha = 1;
+        }];
+
+        // Auto-dismiss after 2 seconds
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [UIView animateWithDuration:0.3 animations:^{
+                toastView.alpha = 0;
+            } completion:^(BOOL finished) {
+                [toastView removeFromSuperview];
+            }];
+        });
+    });
+}
+
+// Helper class for undo button action
+@interface ApolloUndoHelper : NSObject
++ (void)undoFilterTapped:(UIButton *)sender;
+@end
+
+@implementation ApolloUndoHelper
++ (void)undoFilterTapped:(UIButton *)sender {
+    NSString *sub = objc_getAssociatedObject(sender, "filterSubredditName");
+    UIView *toast = objc_getAssociatedObject(sender, "toastView");
+    if (sub) {
+        UnfilterSubreddit(sub);
+    }
+    if (toast) {
+        [UIView animateWithDuration:0.3 animations:^{
+            toast.alpha = 0;
+        } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
+    }
+}
+@end
+
+// ============================================================================
+// MARK: - Post Cell Swipe: Hook the post list to add "Filter Subreddit" on left swipe
+// ============================================================================
+
+// Apollo's post cells in feed views. The post list uses ASTableNode (Texture framework).
+// Apollo implements swipe actions via the editActionsForRowAtIndexPath pattern.
+// We hook the PostListViewController (or the data source) to inject our filter action.
+
+// RDKLink interface already declared in Tweak.h, but we need the subreddit property
+@interface RDKLink (Filter)
+@property (nonatomic, copy) NSString *subreddit;
+@end
+
+// Apollo's post cell node
+@interface _TtC6Apollo12PostCellNode : NSObject
+@property (nonatomic, strong) RDKLink *link;
+@end
+
+// Hook ASTableView to intercept swipe actions configuration
+// Apollo uses ASTableNode which wraps ASTableView, and the swipe actions
+// are provided through the table view's delegate methods.
+
+// We'll hook the UITableView trailing swipe actions delegate method
+// This is called on the ASTableView's delegate (which is the ASTableNode's
+// dataSource/delegate — typically the PostListViewController)
+
+@interface ASTableNode : NSObject
+- (id)nodeForRowAtIndexPath:(NSIndexPath *)indexPath;
+@end
+
+// Add filter action on trailing swipe (added to existing ASTableView hook)
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UISwipeActionsConfiguration *orig = %orig;
+
+    if (!sFilterSwipeEnabled) {
+        return orig;
+    }
+
+    // Try to get the post cell node to extract subreddit name
+    NSString *subredditName = nil;
+    @try {
+        // ASTableView has a reference to its ASTableNode
+        ASTableNode *tableNode = MSHookIvar<ASTableNode *>(self, "_asyncDelegate");
+        if (!tableNode) {
+            tableNode = MSHookIvar<ASTableNode *>(self, "tableNode");
+        }
+
+        id cellNode = nil;
+        if (tableNode && [tableNode respondsToSelector:@selector(nodeForRowAtIndexPath:)]) {
+            cellNode = [tableNode nodeForRowAtIndexPath:indexPath];
+        }
+
+        if (cellNode) {
+            // Try to get RDKLink from the cell node
+            @try {
+                RDKLink *link = MSHookIvar<RDKLink *>(cellNode, "link");
+                if (link && [link respondsToSelector:@selector(subreddit)]) {
+                    subredditName = link.subreddit;
+                }
+            } @catch (NSException *e) {}
+        }
+    } @catch (NSException *e) {
+        ApolloLog(@"[Filter Swipe] Error getting subreddit: %@", e);
+    }
+
+    if (!subredditName || subredditName.length == 0) {
+        return orig;
+    }
+
+    // Create the filter action
+    NSString *capturedSubreddit = [subredditName copy];
+    UIContextualAction *filterAction = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:[NSString stringWithFormat:@"Filter\nr/%@", capturedSubreddit] handler:^(UIContextualAction *action, UIView *sourceView, void (^completionHandler)(BOOL)) {
+        FilterSubreddit(capturedSubreddit);
+        ShowUndoToast(capturedSubreddit);
+        completionHandler(YES);
+    }];
+    filterAction.backgroundColor = [UIColor systemRedColor];
+    filterAction.image = [UIImage systemImageNamed:@"eye.slash.fill"];
+
+    // Prepend filter action to existing trailing actions
+    NSMutableArray *actions = [NSMutableArray array];
+    if (orig && orig.actions) {
+        [actions addObjectsFromArray:orig.actions];
+    }
+    [actions addObject:filterAction];
+
+    UISwipeActionsConfiguration *config = [UISwipeActionsConfiguration configurationWithActions:actions];
+    config.performsFirstActionWithFullSwipe = orig ? orig.performsFirstActionWithFullSwipe : NO;
+    return config;
+}
+
 %end
+
+// ============================================================================
+// MARK: - Disable Voting: Hide vote buttons and block vote actions
+// ============================================================================
+
+// Apollo's voting UI is in the post cell nodes and comment cell nodes.
+// The vote buttons are typically ASButtonNode or UIButton subclasses.
+// We hook the post cell node's didLoad to hide vote-related views when the setting is on.
+
+// Hook PostCellNode to hide vote buttons
+%hook _TtC6Apollo12PostCellNode
+
+- (void)didLoad {
+    %orig;
+
+    if (!sDisableVoting) return;
+
+    @try {
+        UIView *view = MSHookIvar<UIView *>(self, "_view");
+        if (!view) return;
+
+        // Recursively find and hide vote buttons
+        // Apollo vote buttons typically have accessibility labels like "Upvote", "Downvote"
+        // or are part of a voting stack view
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self apollo_hideVoteButtonsInView:view];
+        });
+    } @catch (NSException *e) {
+        ApolloLog(@"[DisableVoting] Error hiding vote buttons in PostCellNode: %@", e);
+    }
+}
+
+%new
+- (void)apollo_hideVoteButtonsInView:(UIView *)view {
+    for (UIView *subview in view.subviews) {
+        // Check accessibility label for vote-related buttons
+        NSString *accessLabel = subview.accessibilityLabel;
+        if (accessLabel) {
+            NSString *lower = [accessLabel lowercaseString];
+            if ([lower containsString:@"upvote"] || [lower containsString:@"downvote"] ||
+                [lower containsString:@"up vote"] || [lower containsString:@"down vote"]) {
+                subview.hidden = YES;
+                subview.userInteractionEnabled = NO;
+                continue;
+            }
+        }
+        // Check accessibility identifier
+        NSString *accessId = subview.accessibilityIdentifier;
+        if (accessId) {
+            NSString *lower = [accessId lowercaseString];
+            if ([lower containsString:@"vote"] || [lower containsString:@"score"]) {
+                subview.hidden = YES;
+                subview.userInteractionEnabled = NO;
+                continue;
+            }
+        }
+        // Recurse
+        [self apollo_hideVoteButtonsInView:subview];
+    }
+}
+
+%end
+
+// (Vote blocking is handled in the RDKClient hook above)
+
+// ============================================================================
+// MARK: - Ctor
+// ============================================================================
 
 %ctor {
     cache = [NSCache new];
@@ -1607,7 +2015,7 @@ static char kASTableViewHasSearchToolbarKey;
     MediaShareLinkRegex = [NSRegularExpression regularExpressionWithPattern:MediaShareLinkPattern options:NSRegularExpressionCaseInsensitive error:&error];
     ImgurTitleIdImageLinkRegex = [NSRegularExpression regularExpressionWithPattern:ImgurTitleIdImageLinkPattern options:NSRegularExpressionCaseInsensitive error:&error];
 
-    NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES, UDKeyEnableFLEX: @NO, UDKeyApolloShowUnreadComments: @NO, UDKeyTrendingSubredditsLimit: @"5", UDKeyShowRandNsfw: @NO, UDKeyRandomSubredditsSource:defaultRandomSubredditsSource, UDKeyRandNsfwSubredditsSource: @"", UDKeyTrendingSubredditsSource: defaultTrendingSubredditsSource };
+    NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES, UDKeyEnableFLEX: @NO, UDKeyApolloShowUnreadComments: @NO, UDKeyTrendingSubredditsLimit: @"5", UDKeyShowRandNsfw: @NO, UDKeyRandomSubredditsSource:defaultRandomSubredditsSource, UDKeyRandNsfwSubredditsSource: @"", UDKeyTrendingSubredditsSource: defaultTrendingSubredditsSource, UDKeyDisableVoting: @NO, UDKeyFilterSwipeEnabled: @YES };
     [[NSUserDefaults standardUserDefaults] registerDefaults:defaultValues];
 
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
@@ -1615,6 +2023,8 @@ static char kASTableViewHasSearchToolbarKey;
     sRedirectURI = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedirectURI] ?: @"" copy];
     sUserAgent = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyUserAgent] ?: @"" copy];
     sBlockAnnouncements = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBlockAnnouncements];
+    sDisableVoting = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDisableVoting];
+    sFilterSwipeEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFilterSwipeEnabled];
 
     sRandomSubredditsSource = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRandomSubredditsSource];
     sRandNsfwSubredditsSource = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRandNsfwSubredditsSource];
